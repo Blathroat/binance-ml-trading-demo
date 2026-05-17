@@ -1,0 +1,22 @@
+.idea/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+__pycache__/
+*.py[cod]
+*.pyo
+*.log
+.env
+.venv/
+venv/
+env/
+1.zip
+.DS_Store
+
+# 运行生成的结果文件
+outputs/
+
+# 本地缓存的行情原始数据与处理后数据
+data/raw/*.csv
+data/processed/*.csv
+
