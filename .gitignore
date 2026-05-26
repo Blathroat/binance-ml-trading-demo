@@ -14,9 +14,15 @@ env/
 .DS_Store
 
 # 运行生成的结果文件
-outputs/
+outputs/*
+!outputs/models/
+outputs/models/*
+!outputs/models/*.joblib
 
 # 本地缓存的行情原始数据与处理后数据
 data/raw/*.csv
 data/processed/*.csv
+
+# 临时调试脚本
+_tmp*.py
 

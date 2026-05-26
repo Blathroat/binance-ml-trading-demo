@@ -4,19 +4,26 @@ import argparse
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Iterable
+from typing import Iterable, Sequence
+import time
 
 import ccxt
 import numpy as np
 import pandas as pd
 
 
+DEFAULT_SYMBOL = "BTC/USDT"
+DEFAULT_TIMEFRAME = "15m"
+DEFAULT_LIMIT = 2000
+DEFAULT_LOOKBACK_DAYS = 30
+
+
 @dataclass
 class DemoConfig:
-    symbol: str = "BTC/USDT"
-    timeframe: str = "1h"
-    limit: int = 500
-    days_back: int = 30
+    symbol: str = DEFAULT_SYMBOL
+    timeframe: str = DEFAULT_TIMEFRAME
+    limit: int = DEFAULT_LIMIT
+    days_back: int = DEFAULT_LOOKBACK_DAYS
     exchange_id: str = "binance"
     output_dir: Path = Path("outputs")
     raw_dir: Path = Path("data/raw")
@@ -33,14 +40,52 @@ def make_exchange(exchange_id: str = "binance"):
     return exchange
 
 
+def compute_ema(series: pd.Series, span: int) -> pd.Series:
+    return series.ewm(span=span, adjust=False).mean()
+
+
+def compute_macd(series: pd.Series) -> tuple[pd.Series, pd.Series, pd.Series]:
+    ema_fast = compute_ema(series, 12)
+    ema_slow = compute_ema(series, 26)
+    macd_line = ema_fast - ema_slow
+    macd_signal = compute_ema(macd_line, 9)
+    macd_hist = macd_line - macd_signal
+    return macd_line, macd_signal, macd_hist
+
+
+def compute_atr(high: pd.Series, low: pd.Series, close: pd.Series, window: int = 14) -> pd.Series:
+    prev_close = close.shift(1)
+    true_range = pd.concat(
+        [
+            (high - low).abs(),
+            (high - prev_close).abs(),
+            (low - prev_close).abs(),
+        ],
+        axis=1,
+    ).max(axis=1)
+    return true_range.rolling(window).mean()
+
+
+def compute_bollinger_bands(series: pd.Series, window: int = 20, num_std: float = 2.0) -> tuple[pd.Series, pd.Series, pd.Series, pd.Series]:
+    mid = series.rolling(window).mean()
+    std = series.rolling(window).std()
+    upper = mid + num_std * std
+    lower = mid - num_std * std
+    width = (upper - lower) / mid.replace(0, pd.NA)
+    return mid, upper, lower, width
+
+
+def safe_ratio(numerator: pd.Series, denominator: pd.Series) -> pd.Series:
+    return numerator / denominator.replace(0, pd.NA)
+
+
 def fetch_ohlcv_data(exchange, symbol: str, timeframe: str, days_back: int, limit: int) -> pd.DataFrame:
     if days_back <= 0:
         raise ValueError("days_back 必须大于 0")
     if limit <= 0:
         raise ValueError("limit 必须大于 0")
 
-    since_dt = datetime.now(timezone.utc) - pd.Timedelta(days=days_back)
-    since_ms = int(since_dt.timestamp() * 1000)
+    since_ms = int((time.time() - days_back * 86400) * 1000)
     all_rows: list[list[float]] = []
     batch_size = min(500, limit)
 
@@ -161,22 +206,46 @@ def add_features(df: pd.DataFrame) -> pd.DataFrame:
     out = out.sort_values("timestamp").reset_index(drop=True)
 
     out["return_1"] = out["close"].pct_change()
+    out["return_3"] = out["close"].pct_change(3)
+    out["return_6"] = out["close"].pct_change(6)
+    out["momentum_12"] = out["close"].pct_change(12)
     ratio = out["close"] / out["close"].shift(1)
     out["log_return_1"] = np.log(ratio.where(ratio > 0))
     out["range_pct"] = (out["high"] - out["low"]) / out["close"]
+    out["volume_change_1"] = out["volume"].pct_change()
+    out["volume_change_3"] = out["volume"].pct_change(3)
+    out["ma_5"] = out["close"].rolling(5).mean()
     out["ma_7"] = out["close"].rolling(7).mean()
+    out["ma_13"] = out["close"].rolling(13).mean()
     out["ma_21"] = out["close"].rolling(21).mean()
+    out["ma_34"] = out["close"].rolling(34).mean()
+    out["ema_12"] = compute_ema(out["close"], 12)
+    out["ema_26"] = compute_ema(out["close"], 26)
+    out["macd"], out["macd_signal"], out["macd_hist"] = compute_macd(out["close"])
     out["volatility_7"] = out["return_1"].rolling(7).std()
+    out["volatility_14"] = out["return_1"].rolling(14).std()
     out["volume_ma_7"] = out["volume"].rolling(7).mean()
+    out["volume_ma_21"] = out["volume"].rolling(21).mean()
+    out["volume_zscore_20"] = (out["volume"] - out["volume"].rolling(20).mean()) / out["volume"].rolling(20).std()
     out["rsi_14"] = compute_rsi(out["close"], window=14)
+    out["rsi_7"] = compute_rsi(out["close"], window=7)
     out["close_vs_ma7"] = out["close"] / out["ma_7"] - 1
     out["close_vs_ma21"] = out["close"] / out["ma_21"] - 1
+    out["close_vs_ma5"] = out["close"] / out["ma_5"] - 1
+    out["close_vs_ma13"] = out["close"] / out["ma_13"] - 1
+    out["close_vs_ema12"] = out["close"] / out["ema_12"] - 1
+    out["close_vs_ema26"] = out["close"] / out["ema_26"] - 1
+    out["trend_strength"] = out["ma_5"] / out["ma_34"] - 1
+    out["atr_14"] = compute_atr(out["high"], out["low"], out["close"], window=14)
+    out["bb_mid"], out["bb_upper"], out["bb_lower"], out["bb_width"] = compute_bollinger_bands(out["close"], window=20)
+    out["price_position_14"] = safe_ratio(out["close"] - out["low"].rolling(14).min(), out["high"].rolling(14).max() - out["low"].rolling(14).min())
 
     out["day_of_week"] = out["timestamp"].dt.day_name()
     out["hour"] = out["timestamp"].dt.hour
+    out["minute"] = out["timestamp"].dt.minute
     out["trend_state"] = "neutral"
-    out.loc[out["ma_7"] > out["ma_21"], "trend_state"] = "bull"
-    out.loc[out["ma_7"] < out["ma_21"], "trend_state"] = "bear"
+    out.loc[(out["ma_13"] > out["ma_34"]) & (out["macd_hist"] > 0), "trend_state"] = "bull"
+    out.loc[(out["ma_13"] < out["ma_34"]) & (out["macd_hist"] < 0), "trend_state"] = "bear"
 
     return out.dropna().reset_index(drop=True)
 
@@ -185,8 +254,8 @@ def generate_signal(df: pd.DataFrame) -> pd.DataFrame:
     out = df.copy()
     out["signal"] = "hold"
 
-    buy_mask = (out["ma_7"] > out["ma_21"]) & (out["rsi_14"] < 70)
-    sell_mask = (out["ma_7"] < out["ma_21"]) & (out["rsi_14"] > 30)
+    buy_mask = (out["ma_13"] > out["ma_34"]) & (out["macd_hist"] > 0) & (out["rsi_14"] < 72)
+    sell_mask = (out["ma_13"] < out["ma_34"]) & (out["macd_hist"] < 0) & (out["rsi_14"] > 28)
 
     out.loc[buy_mask, "signal"] = "buy"
     out.loc[sell_mask, "signal"] = "sell"
@@ -247,15 +316,15 @@ def run_demo(config: DemoConfig) -> None:
 def build_arg_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="基于 ccxt 接入 Binance 现货行情的 Demo")
     parser.add_argument("--symbol", default="BTC/USDT", help="交易对，例如 BTC/USDT")
-    parser.add_argument("--timeframe", default="1h", help="K线周期，例如 1h、15m、4h")
-    parser.add_argument("--limit", type=int, default=500, help="最多抓取的 K 线条数")
-    parser.add_argument("--days-back", type=int, default=30, help="回看最近多少天的数据")
+    parser.add_argument("--timeframe", default=DEFAULT_TIMEFRAME, help="K线周期，例如 1h、15m、4h")
+    parser.add_argument("--limit", type=int, default=DEFAULT_LIMIT, help="最多抓取的 K 线条数")
+    parser.add_argument("--days-back", type=int, default=DEFAULT_LOOKBACK_DAYS, help="回看最近多少天的数据")
     parser.add_argument("--exchange", default="binance", help="ccxt 支持的交易所 id")
     parser.add_argument("--output-dir", default="outputs", help="结果保存目录")
     return parser
 
 
-def main(argv: Iterable[str] | None = None) -> int:
+def main(argv: Sequence[str] | None = None) -> int:
     parser = build_arg_parser()
     args = parser.parse_args(argv)
     config = DemoConfig(
