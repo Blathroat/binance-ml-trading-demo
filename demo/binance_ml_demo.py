@@ -18,9 +18,8 @@ import numpy as np
 import pandas as pd
 import joblib
 from sklearn.compose import ColumnTransformer
-from sklearn.ensemble import ExtraTreesClassifier, HistGradientBoostingClassifier, RandomForestClassifier, VotingClassifier
+from sklearn.ensemble import ExtraTreesClassifier, HistGradientBoostingClassifier, RandomForestClassifier
 from sklearn.impute import SimpleImputer
-from sklearn.linear_model import LogisticRegression
 from sklearn.metrics import accuracy_score, f1_score, precision_score, recall_score, roc_auc_score
 from sklearn.pipeline import Pipeline
 from sklearn.preprocessing import OneHotEncoder, StandardScaler
@@ -36,11 +35,14 @@ if str(ROOT_DIR) not in sys.path:
     sys.path.insert(0, str(ROOT_DIR))
 
 from demo.binance_spot_demo import (
+    DEFAULT_OUTPUT_DIR,
+    DEFAULT_RAW_DIR,
     add_features,
     fetch_ohlcv_data,
     load_local_raw_data,
     make_exchange,
     resolve_latest_raw_file,
+    resolve_project_path,
 )
 from demo.model_store import load_model_artifact, save_model_artifact
 
@@ -52,12 +54,14 @@ class MLConfig:
     limit: int = 8000
     days_back: int = 180
     exchange_id: str = "binance"
-    output_dir: Path = Path("outputs")
-    raw_dir: Path = Path("data/raw")
+    output_dir: Path = DEFAULT_OUTPUT_DIR
+    raw_dir: Path = DEFAULT_RAW_DIR
     train_ratio: float = 0.7
     val_ratio: float = 0.15
     fetch_online: bool = False
     raw_file: str | None = None
+    raw_offset: int = 0
+    raw_window: int = 0
     target_horizon: int = 1
     target_threshold: float = 0.0015
     fee_rate: float = 0.001
@@ -76,12 +80,14 @@ class InferenceConfig:
     limit: int = 8000
     days_back: int = 180
     exchange_id: str = "binance"
-    output_dir: Path = Path("outputs")
-    raw_dir: Path = Path("data/raw")
+    output_dir: Path = DEFAULT_OUTPUT_DIR
+    raw_dir: Path = DEFAULT_RAW_DIR
     train_ratio: float = 0.7
     val_ratio: float = 0.15
     fetch_online: bool = False
     raw_file: str | None = None
+    raw_offset: int = 0
+    raw_window: int = 0
     target_horizon: int = 1
     target_threshold: float = 0.0015
     fee_rate: float = 0.001
@@ -389,6 +395,8 @@ def run_inference(config: InferenceConfig, model_path: str | Path, verbose: bool
         val_ratio=config.val_ratio,
         fetch_online=config.fetch_online,
         raw_file=config.raw_file,
+        raw_offset=config.raw_offset,
+        raw_window=config.raw_window,
         target_horizon=config.target_horizon,
         target_threshold=config.target_threshold,
         fee_rate=config.fee_rate,
@@ -454,13 +462,23 @@ def load_or_fetch_raw_data(config: MLConfig) -> tuple[pd.DataFrame, str, Path]:
         except Exception as exc:
             print(f"[警告] 联网抓取失败，改为读取本地原始数据：{exc}")
 
-    raw_path = resolve_latest_raw_file(config.symbol, config.timeframe, search_dirs=(config.raw_dir, Path("outputs")), raw_file=config.raw_file)
+    raw_path = resolve_latest_raw_file(config.symbol, config.timeframe, search_dirs=(config.raw_dir, config.output_dir), raw_file=config.raw_file)
     raw_df = load_local_raw_data(raw_path, symbol=config.symbol, timeframe=config.timeframe, exchange_id=config.exchange_id)
     return raw_df, "local", raw_path
 
 
 def build_dataset(config: MLConfig) -> tuple[pd.DataFrame, str, Path]:
     raw_df, data_source, raw_path = load_or_fetch_raw_data(config)
+    if config.raw_offset < 0:
+        raise ValueError("raw_offset 不能小于 0")
+    if config.raw_window < 0:
+        raise ValueError("raw_window 不能小于 0")
+    if config.raw_offset or config.raw_window:
+        start = config.raw_offset
+        end = None if config.raw_window <= 0 else start + config.raw_window
+        raw_df = raw_df.iloc[start:end].copy()
+        if raw_df.empty:
+            raise ValueError("raw_offset/raw_window 截取后没有可用原始数据")
     feature_df = add_features(raw_df)
     feature_df = feature_df.sort_values("timestamp").reset_index(drop=True)
     feature_df["future_close"] = feature_df["close"].shift(-config.target_horizon)
@@ -642,9 +660,6 @@ def make_xgb_pipeline(params: dict, use_gpu: bool) -> object | None:
 
 def build_candidate_models(config: MLConfig):
     cpu_threads = max(1, (os.cpu_count() or 1) - 1)
-    logistic = build_pipeline(
-        LogisticRegression(max_iter=5000, class_weight="balanced", C=0.8, random_state=42, solver="saga")
-    )
     random_forest = build_pipeline(
         RandomForestClassifier(
             n_estimators=800,
@@ -677,23 +692,10 @@ def build_candidate_models(config: MLConfig):
             random_state=42,
         )
     )
-    voting = VotingClassifier(
-        estimators=[
-            ("lr", logistic),
-            ("rf", random_forest),
-            ("et", extra_trees),
-        ],
-        voting="soft",
-        n_jobs=cpu_threads,
-        weights=[1, 2, 2],
-    )
-
     models: dict[str, Any] = {}
-    models["逻辑回归"] = logistic
     models["随机森林"] = random_forest
     models["极端随机树"] = extra_trees
     models["HistGradientBoosting"] = hist_gbdt
-    models["软投票集成"] = voting
 
     if XGBClassifier is not None:
         xgb_common = dict(
@@ -763,6 +765,8 @@ def save_outputs(
         "target_threshold": config.target_threshold,
         "fetch_online": config.fetch_online,
         "raw_file": config.raw_file,
+        "raw_offset": config.raw_offset,
+        "raw_window": config.raw_window,
         "data_source": data_source,
         "raw_path": str(raw_path),
         "model_path": str(model_path),
@@ -970,9 +974,11 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--limit", type=int, default=8000, help="最多抓取的 K 线条数")
     parser.add_argument("--days-back", type=int, default=180, help="回看最近多少天的数据")
     parser.add_argument("--exchange", default="binance", help="ccxt 支持的交易所 id")
-    parser.add_argument("--output-dir", default="outputs", help="结果保存目录")
-    parser.add_argument("--raw-dir", default="data/raw", help="原始数据目录，默认从这里读取最新 raw 文件")
+    parser.add_argument("--output-dir", default=str(DEFAULT_OUTPUT_DIR), help="结果保存目录")
+    parser.add_argument("--raw-dir", default=str(DEFAULT_RAW_DIR), help="原始数据目录，默认从这里读取最新 raw 文件")
     parser.add_argument("--raw-file", default=None, help="手动指定原始数据 CSV 文件路径")
+    parser.add_argument("--raw-offset", type=int, default=0, help="从原始 CSV 第几行开始截取连续 K 线，0 表示从头开始")
+    parser.add_argument("--raw-window", type=int, default=0, help="截取多少行连续原始 K 线，0 表示不截断")
     parser.add_argument("--fetch-online", action="store_true", help="联网抓取 Binance 数据并自动保存到本地 raw 目录")
     parser.add_argument("--target-horizon", type=int, default=1, help="预测未来多少根 K 线的涨跌方向")
     parser.add_argument("--target-threshold", type=float, default=0.0015, help="涨跌标签阈值，过滤微小波动噪声")
@@ -997,12 +1003,14 @@ def main(argv: Sequence[str] | None = None) -> int:
         limit=args.limit,
         days_back=args.days_back,
         exchange_id=args.exchange,
-        output_dir=Path(args.output_dir),
-        raw_dir=Path(args.raw_dir),
+        output_dir=resolve_project_path(args.output_dir),
+        raw_dir=resolve_project_path(args.raw_dir),
         train_ratio=args.train_ratio,
         val_ratio=args.val_ratio,
         fetch_online=args.fetch_online,
-        raw_file=args.raw_file,
+        raw_file=str(resolve_project_path(args.raw_file)) if args.raw_file else None,
+        raw_offset=args.raw_offset,
+        raw_window=args.raw_window,
         target_horizon=args.target_horizon,
         target_threshold=args.target_threshold,
         fee_rate=args.fee_rate,
