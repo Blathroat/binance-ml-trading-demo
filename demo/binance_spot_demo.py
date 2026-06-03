@@ -16,6 +16,14 @@ DEFAULT_SYMBOL = "BTC/USDT"
 DEFAULT_TIMEFRAME = "15m"
 DEFAULT_LIMIT = 2000
 DEFAULT_LOOKBACK_DAYS = 30
+ROOT_DIR = Path(__file__).resolve().parent.parent
+DEFAULT_OUTPUT_DIR = ROOT_DIR / "outputs"
+DEFAULT_RAW_DIR = ROOT_DIR / "data/raw"
+
+
+def resolve_project_path(path: str | Path) -> Path:
+    resolved = Path(path)
+    return resolved if resolved.is_absolute() else ROOT_DIR / resolved
 
 
 @dataclass
@@ -25,8 +33,8 @@ class DemoConfig:
     limit: int = DEFAULT_LIMIT
     days_back: int = DEFAULT_LOOKBACK_DAYS
     exchange_id: str = "binance"
-    output_dir: Path = Path("outputs")
-    raw_dir: Path = Path("data/raw")
+    output_dir: Path = DEFAULT_OUTPUT_DIR
+    raw_dir: Path = DEFAULT_RAW_DIR
 
 
 RAW_REQUIRED_COLUMNS = ["timestamp", "open", "high", "low", "close", "volume"]
@@ -129,11 +137,11 @@ def normalize_symbol_token(symbol: str) -> str:
 def resolve_latest_raw_file(
     symbol: str,
     timeframe: str,
-    search_dirs: Iterable[str | Path] = (Path("data/raw"), Path("outputs")),
+    search_dirs: Iterable[str | Path] = (DEFAULT_RAW_DIR, DEFAULT_OUTPUT_DIR),
     raw_file: str | Path | None = None,
 ) -> Path:
     if raw_file is not None:
-        candidate = Path(raw_file)
+        candidate = resolve_project_path(raw_file)
         if not candidate.exists():
             raise FileNotFoundError(f"指定的原始数据文件不存在：{candidate}")
         return candidate
@@ -142,7 +150,7 @@ def resolve_latest_raw_file(
     pattern = f"raw_{token}_{timeframe}_*.csv"
     candidates: list[Path] = []
     for base in search_dirs:
-        base_path = Path(base)
+        base_path = resolve_project_path(base)
         if base_path.exists():
             candidates.extend(sorted(base_path.glob(pattern)))
 
@@ -333,7 +341,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         limit=args.limit,
         days_back=args.days_back,
         exchange_id=args.exchange,
-        output_dir=Path(args.output_dir),
+        output_dir=resolve_project_path(args.output_dir),
     )
     run_demo(config)
     return 0
