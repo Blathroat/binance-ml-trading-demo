@@ -18,11 +18,22 @@ outputs/*
 !outputs/models/
 outputs/models/*
 !outputs/models/*.joblib
+outputs/random_sample_charts*/
 
 # 本地缓存的行情原始数据与处理后数据
 data/raw/*.csv
 data/processed/*.csv
+demo/data/
+demo/outputs/
 
 # 临时调试脚本
 _tmp*.py
+
+# 办公文档
+*.docx
+*.ppt
+*.pptx
+
+# 仅忽略这份 Markdown 修改说明
+PPT与实验报告修改说明.md
 
