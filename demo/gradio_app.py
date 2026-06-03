@@ -13,6 +13,7 @@ if str(ROOT_DIR) not in sys.path:
     sys.path.insert(0, str(ROOT_DIR))
 
 from demo.binance_ml_demo import InferenceConfig, MLConfig, run_batch_training as run_batch_training_backend, run_inference
+from demo.binance_spot_demo import DEFAULT_RAW_DIR, resolve_project_path
 
 
 def _format_summary(result, title: str = "训练完成") -> str:
@@ -174,6 +175,8 @@ def run_batch_training(
     keep_recent_runs,
     raw_dir,
     raw_file,
+    raw_offset,
+    raw_window,
     train_ratio,
     val_ratio,
 ):
@@ -186,11 +189,13 @@ def run_batch_training(
         timeframe=timeframes[0],
         limit=int(limit),
         days_back=int(days_back),
-        raw_dir=Path(raw_dir),
+        raw_dir=resolve_project_path(raw_dir),
         train_ratio=float(train_ratio),
         val_ratio=float(val_ratio),
         fetch_online=bool(fetch_online),
-        raw_file=raw_file,
+        raw_file=str(resolve_project_path(raw_file)) if raw_file else None,
+        raw_offset=int(raw_offset),
+        raw_window=int(raw_window),
         target_horizon=int(target_horizon),
         target_threshold=float(target_threshold),
         fee_rate=float(fee_rate),
@@ -221,6 +226,8 @@ def run_inference_ui(
     selected_model_path,
     raw_dir,
     raw_file,
+    raw_offset,
+    raw_window,
     train_ratio,
     val_ratio,
     keep_recent_runs,
@@ -234,11 +241,13 @@ def run_inference_ui(
         timeframe=timeframe,
         limit=int(limit),
         days_back=int(days_back),
-        raw_dir=Path(raw_dir),
+        raw_dir=resolve_project_path(raw_dir),
         train_ratio=float(train_ratio),
         val_ratio=float(val_ratio),
         fetch_online=bool(fetch_online),
-        raw_file=raw_file,
+        raw_file=str(resolve_project_path(raw_file)) if raw_file else None,
+        raw_offset=int(raw_offset),
+        raw_window=int(raw_window),
         target_horizon=int(target_horizon),
         target_threshold=float(target_threshold),
         fee_rate=float(fee_rate),
@@ -273,15 +282,17 @@ def build_app():
                         use_gpu = gr.Checkbox(value=False, label="启用 GPU 训练选项（需安装 xgboost）")
                         gpu_backend = gr.Dropdown(["auto", "xgboost", "none"], value="auto", label="GPU 后端")
                         fixed_model_name = gr.Dropdown(
-                            ["auto", "逻辑回归", "随机森林", "极端随机树", "HistGradientBoosting", "软投票集成", "XGBoost_CPU", "XGBoost_GPU"],
+                            ["auto", "随机森林", "极端随机树", "HistGradientBoosting", "XGBoost_CPU", "XGBoost_GPU"],
                             value="auto",
                             label="训练时模型选择",
                         )
                         selection_metric = gr.Dropdown(["total_return", "annual_return", "sharpe"], value="total_return", label="训练时模型选择目标")
                         min_trades = gr.Slider(0, 50, value=5, step=1, label="验证集最少交易次数")
                         keep_recent_runs = gr.Slider(1, 50, value=20, step=1, label="最近输出保留条数")
-                        raw_dir = gr.Textbox(value="data/raw", label="原始数据目录")
+                        raw_dir = gr.Textbox(value=str(DEFAULT_RAW_DIR), label="原始数据目录")
                         raw_file = gr.Textbox(value="", label="手动指定 raw 文件（可留空）")
+                        raw_offset = gr.Number(value=0, precision=0, label="raw 起始行 offset（0 表示从头开始）")
+                        raw_window = gr.Number(value=0, precision=0, label="raw 连续窗口行数（0 表示不截断）")
                         train_ratio = gr.Slider(0.5, 0.85, value=0.7, step=0.01, label="训练集比例")
                         val_ratio = gr.Slider(0.05, 0.3, value=0.15, step=0.01, label="验证集比例")
                         run_btn = gr.Button("开始批量训练", variant="primary")
@@ -321,6 +332,8 @@ def build_app():
                         keep_recent_runs,
                         raw_dir,
                         raw_file,
+                        raw_offset,
+                        raw_window,
                         train_ratio,
                         val_ratio,
                     ],
@@ -357,8 +370,10 @@ def build_app():
                         target_horizon_inf = gr.Slider(1, 12, value=1, step=1, label="预测未来 K 线根数")
                         target_threshold_inf = gr.Slider(0.0, 0.005, value=0.0015, step=0.0001, label="收益阈值（过滤微小波动）")
                         fee_rate_inf = gr.Slider(0.0, 0.005, value=0.001, step=0.0001, label="单边手续费率")
-                        raw_dir_inf = gr.Textbox(value="data/raw", label="推理原始数据目录")
+                        raw_dir_inf = gr.Textbox(value=str(DEFAULT_RAW_DIR), label="推理原始数据目录")
                         raw_file_inf = gr.Textbox(value="", label="推理时指定 raw 文件（可留空）")
+                        raw_offset_inf = gr.Number(value=0, precision=0, label="推理 raw 起始行 offset（0 表示从头开始）")
+                        raw_window_inf = gr.Number(value=0, precision=0, label="推理 raw 连续窗口行数（0 表示不截断）")
                         train_ratio_inf = gr.Slider(0.5, 0.85, value=0.7, step=0.01, label="推理数据切分：训练集比例")
                         val_ratio_inf = gr.Slider(0.05, 0.3, value=0.15, step=0.01, label="推理数据切分：验证集比例")
                         keep_recent_runs_inf = gr.Slider(1, 50, value=20, step=1, label="最近输出保留条数")
@@ -393,6 +408,8 @@ def build_app():
                         selected_model_path,
                         raw_dir_inf,
                         raw_file_inf,
+                        raw_offset_inf,
+                        raw_window_inf,
                         train_ratio_inf,
                         val_ratio_inf,
                         keep_recent_runs_inf,
