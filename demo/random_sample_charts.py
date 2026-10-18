@@ -52,6 +52,14 @@ def load_summary(path: Path) -> dict:
     return json.loads(path.read_text(encoding="utf-8"))
 
 
+def to_repo_relative(path: Path) -> str:
+    """把路径转成相对仓库根的 POSIX 路径，避免把本机绝对路径写入结果文件。"""
+    try:
+        return path.resolve().relative_to(ROOT_DIR).as_posix()
+    except ValueError:
+        return str(path)
+
+
 def raw_row_count(raw_path: Path) -> int:
     return len(pd.read_csv(raw_path, usecols=["timestamp"]))
 
@@ -173,7 +181,7 @@ def generate(samples: int, seed: int, output_dir: Path) -> Path:
                 {
                     "timeframe": selected.label,
                     "sample_index": sample_index,
-                    "raw_file": str(raw_path),
+                    "raw_file": to_repo_relative(raw_path),
                     "raw_offset": offset,
                     "raw_window": base_window,
                     "model_path": summary["model_path"],
@@ -185,7 +193,7 @@ def generate(samples: int, seed: int, output_dir: Path) -> Path:
                     "test_win_rate": metrics["win_rate"],
                     "test_trade_count": metrics["trade_count"],
                     "test_exposure": metrics["exposure"],
-                    "equity_chart": str(chart_path),
+                    "equity_chart": to_repo_relative(chart_path),
                 }
             )
 

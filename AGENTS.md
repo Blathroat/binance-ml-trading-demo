@@ -33,4 +33,4 @@
 
 ## Documentation
 - `README.md` is the primary user-facing run guide.
-- `技术规划文档.md`, `要求.md`, and `模型调优实验报告.md` are course/report context; do not treat historical tuning results as guaranteed future performance.
+- `技术规划文档.md` and `模型调优实验报告.md` are course/report context; do not treat historical tuning results as guaranteed future performance.

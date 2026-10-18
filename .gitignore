@@ -34,6 +34,6 @@ _tmp*.py
 *.ppt
 *.pptx
 
-# 仅忽略这份 Markdown 修改说明
-PPT与实验报告修改说明.md
+# 忽略本机的 Markdown 修改说明
+*修改说明.md
 
